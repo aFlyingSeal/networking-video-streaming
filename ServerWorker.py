@@ -19,6 +19,8 @@ class ServerWorker:
 	FILE_NOT_FOUND_404 = 1
 	CON_ERR_500 = 2
 	
+	MAX_PLAYLOAD_SIZE = 1472
+
 	clientInfo = {}
 	
 	def __init__(self, clientInfo):
@@ -110,7 +112,7 @@ class ServerWorker:
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
 		while True:
-			self.clientInfo['event'].wait(0.05) 
+			self.clientInfo['event'].wait(0.02) 
 			
 			# Stop sending if request is PAUSE or TEARDOWN
 			if self.clientInfo['event'].isSet(): 
@@ -119,23 +121,35 @@ class ServerWorker:
 			data = self.clientInfo['videoStream'].nextFrame()
 			if data: 
 				frameNumber = self.clientInfo['videoStream'].frameNbr()
-				try:
-					address = self.clientInfo['rtspSocket'][1][0]
-					port = int(self.clientInfo['rtpPort'])
-					self.clientInfo['rtpSocket'].sendto(self.makeRtp(data, frameNumber),(address,port))
-				except:
-					print("Connection Error")
-					#print('-'*60)
-					#traceback.print_exc(file=sys.stdout)
-					#print('-'*60)
 
-	def makeRtp(self, payload, frameNbr):
+				num_packets = (len(data) + self.MAX_PLAYLOAD_SIZE - 1) // self.MAX_PLAYLOAD_SIZE
+
+				for i in range(num_packets):
+					start = i * self.MAX_PLAYLOAD_SIZE
+					end = min((i + 1) * self.MAX_PLAYLOAD_SIZE, len(data))
+
+					payload = data[start:end]
+
+					marker = 1 if i == num_packets - 1 else 0
+
+					try:
+						address = self.clientInfo['rtspSocket'][1][0]
+						port = int(self.clientInfo['rtpPort'])
+
+						rtp_packet = self.makeRtp(payload, frameNumber, marker)
+						self.clientInfo['rtpSocket'].sendto(rtp_packet ,(address,port))
+					except:
+						print("Connection Error")
+						#print('-'*60)
+						#traceback.print_exc(file=sys.stdout)
+						#print('-'*60)
+
+	def makeRtp(self, payload, frameNbr, marker):
 		"""RTP-packetize the video data."""
 		version = 2
 		padding = 0
 		extension = 0
 		cc = 0
-		marker = 0
 		pt = 26 # MJPEG type
 		seqnum = frameNbr
 		ssrc = 0 

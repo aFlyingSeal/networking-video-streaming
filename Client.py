@@ -1,7 +1,7 @@
 from tkinter import *
 import tkinter.messagebox
 from PIL import Image, ImageTk
-import socket, threading, sys, traceback, os
+import socket, threading, sys, traceback, os, time
 
 from RtpPacket import RtpPacket
 
@@ -34,9 +34,23 @@ class Client:
 		self.teardownAcked = 0
 		self.connectToServer()
 		self.frameNbr = 0
+
+		self.fragPayload = b''
+		self.lastFragNbr = 0
+
+		self.prevTimestamp = 0
+		self.targetDelay = 0.02
 	
 	def createWidgets(self):
 		"""Build GUI."""
+		self.videoFrame = Frame(self.master, width=1280, height=720, bg="black")
+		self.videoFrame.grid(row = 0, column = 0, columnspan = 4, sticky=W+E+N+S)
+
+		self.videoFrame.grid_propagate(0)
+
+		self.label = Label(self.videoFrame, bg="black")
+		self.label.place(relx=0.5, rely=0.5, anchor="center")
+
 		# Create Setup button
 		self.setup = Button(self.master, width=20, padx=3, pady=3)
 		self.setup["text"] = "Setup"
@@ -74,7 +88,9 @@ class Client:
 		"""Teardown button handler."""
 		self.sendRtspRequest(self.TEARDOWN)		
 		self.master.destroy() # Close the gui window
-		os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
+		filename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
+		if os.path.exists(filename):
+			os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
 
 	def pauseMovie(self):
 		"""Pause button handler."""
@@ -94,29 +110,57 @@ class Client:
 		"""Listen for RTP packets."""
 		while True:
 			try:
-				data = self.rtpSocket.recv(20480)
+				data = self.rtpSocket.recv(65536)
 				if data:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
 					
 					currFrameNbr = rtpPacket.seqNum()
+					marker = rtpPacket.marker()
+
+					if currFrameNbr < self.lastFragNbr:
+						continue
+
+					if currFrameNbr > self.lastFragNbr:
+						self.fraggedPayload = b''
+					
+					self.lastFragNbr = currFrameNbr
+					self.fraggedPayload += rtpPacket.getPayload()
+
 					print("Current Seq Num: " + str(currFrameNbr))
-										
-					if currFrameNbr > self.frameNbr: # Discard the late packet
+
+					if marker == 1:
+						currTimestamp = rtpPacket.timestamp()
+						if self.prevTimestamp == 0:
+							timeDiff = currTimestamp - self.prevTimestamp
+							if timeDiff < self.targetDelay:
+								time.sleep(self.targetDelay - timeDiff)
+						
+						self.prevTimestamp = currTimestamp
+
+						self.updateMovie(self.writeFrame(self.fraggedPayload))
+
 						self.frameNbr = currFrameNbr
-						self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
+						self.fraggedPayload = b''
+
 			except:
 				# Stop listening upon requesting PAUSE or TEARDOWN
-				if self.playEvent.isSet(): 
-					break
-				
-				# Upon receiving ACK for TEARDOWN request,
-				# close the RTP socket
-				if self.teardownAcked == 1:
-					self.rtpSocket.shutdown(socket.SHUT_RDWR)
-					self.rtpSocket.close()
-					break
-					
+					if self.playEvent.isSet(): 
+						break
+			
+					# Upon receiving ACK for TEARDOWN request,
+					# close the RTP socket
+					if self.teardownAcked == 1:
+						try:
+							self.rtpSocket.shutdown(socket.SHUT_RDWR)
+							self.rtpSocket.close()
+						except:
+							pass # Bỏ qua nếu socket đã đóng
+
+						# Xóa frame đang dang dở
+						self.fragmentedPayload = b''
+						break
+
 	def writeFrame(self, data):
 		"""Write the received frame to a temp image file. Return the image file."""
 		cachename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
@@ -129,7 +173,7 @@ class Client:
 	def updateMovie(self, imageFile):
 		"""Update the image file as video frame in the GUI."""
 		photo = ImageTk.PhotoImage(Image.open(imageFile))
-		self.label.configure(image = photo, height=288) 
+		self.label.configure(image = photo) 
 		self.label.image = photo
 		
 	def connectToServer(self):
