@@ -3,6 +3,8 @@ import tkinter.messagebox
 from PIL import Image, ImageTk
 import socket, threading, sys, traceback, os, time
 
+from tkinter import ttk
+
 from RtpPacket import RtpPacket
 
 CACHE_FILE_NAME = "cache-"
@@ -40,16 +42,23 @@ class Client:
 
 		self.prevTimestamp = 0
 		self.targetDelay = 0.02
+
+		self.cachedFrame = 0
+		self.totalFrames = 0
+
+		self.buffer = []
+		self.bufferLock = threading.Lock()
+		self.playing = False
+		self.playerThread = None
 	
 	def createWidgets(self):
 		"""Build GUI."""
 		self.videoFrame = Frame(self.master, width=1280, height=720, bg="black")
 		self.videoFrame.grid(row = 0, column = 0, columnspan = 4, sticky=W+E+N+S)
-
 		self.videoFrame.grid_propagate(0)
 
-		self.label = Label(self.videoFrame, bg="black")
-		self.label.place(relx=0.5, rely=0.5, anchor="center")
+		self.videoLabel = Label(self.videoFrame, bg="black")
+		self.videoLabel.place(relx=0.5, rely=0.5, anchor="center")
 
 		# Create Setup button
 		self.setup = Button(self.master, width=20, padx=3, pady=3)
@@ -74,10 +83,29 @@ class Client:
 		self.teardown["text"] = "Teardown"
 		self.teardown["command"] =  self.exitClient
 		self.teardown.grid(row=1, column=3, padx=2, pady=2)
-		
-		# Create a label to display the movie
-		self.label = Label(self.master, height=19)
-		self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5) 
+
+		# self.label = Label(self.master, text="video-streaming", height=19)
+		# self.label.grid(row=0, column=0, columnspan=4, sticky=W+E+N+S, padx=5, pady=5)
+
+		self.progressBar = Canvas(self.master, height=10, bg="#333333", highlightthickness=0)
+		self.progressBar.grid(row=2, column=0, columnspan=4, sticky="ew", padx=10, pady=5)
+
+		print("Canvas width:", self.progressBar.winfo_width())
+		print("Canvas height:", self.progressBar.winfo_height())
+
+		self.cacheRect = self.progressBar.create_rectangle(0, 0, 0, 10, fill="#888888", width=0)
+
+		print("cache coords:", self.progressBar.coords(self.cacheRect))
+
+		self.playRect = self.progressBar.create_rectangle(0, 0, 0, 10, fill="#ff0000", width=0)
+
+		print("play coords:", self.progressBar.coords(self.playRect))
+
+		self.master.grid_columnconfigure(0, weight=1)
+		self.master.grid_columnconfigure(1, weight=1)
+		self.master.grid_columnconfigure(2, weight=1)
+		self.master.grid_columnconfigure(3, weight=1)
+		self.master.grid_rowconfigure(0, weight=1)
 	
 	def setupMovie(self):
 		"""Setup button handler."""
@@ -86,6 +114,8 @@ class Client:
 	
 	def exitClient(self):
 		"""Teardown button handler."""
+		self.playEvent.set()
+		self.playing = False
 		self.sendRtspRequest(self.TEARDOWN)		
 		self.master.destroy() # Close the gui window
 		filename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
@@ -95,17 +125,60 @@ class Client:
 	def pauseMovie(self):
 		"""Pause button handler."""
 		if self.state == self.PLAYING:
+			self.playEvent.set()
+			self.playing = False
 			self.sendRtspRequest(self.PAUSE)
 	
 	def playMovie(self):
 		"""Play button handler."""
 		if self.state == self.READY:
-			# Create a new thread to listen for RTP packets
-			threading.Thread(target=self.listenRtp).start()
 			self.playEvent = threading.Event()
 			self.playEvent.clear()
+
+			# Create a new thread to listen for RTP packets
+			threading.Thread(target=self.listenRtp).start()
+
+			self.playing = True
+			self.playerThread = threading.Thread(target=self.playerLoop)
+			self.playerThread.start()
+
 			self.sendRtspRequest(self.PLAY)
+
+	def listenRtp(self):
+		while not self.playEvent.isSet():
+			try:
+				data = self.rtpSocket.recv(65536)
+				if data:
+					rtpPacket = RtpPacket()
+					rtpPacket.decode(data)
+
+					currFrameNbr = rtpPacket.seqNum()
+					marker = rtpPacket.marker()
+
+					if currFrameNbr < self.lastFragNbr:
+						continue
+
+					if currFrameNbr > self.lastFragNbr:
+						self.fraggedPayload = b''
+
+					self.lastFragNbr = currFrameNbr
+					self.fraggedPayload += rtpPacket.getPayload()
+
+					if marker == 1:
+						frameData = self.fraggedPayload
+						self.fraggedPayload = b''
+
+						# PUT FRAME INTO BUFFER
+						with self.bufferLock:
+							self.buffer.append(frameData)
+							self.cachedFrame = self.frameNbr + len(self.buffer)
+
+			except:
+				if self.playEvent.isSet():
+						break
+				continue
 	
+	'''
 	def listenRtp(self):		
 		"""Listen for RTP packets."""
 		while True:
@@ -116,6 +189,9 @@ class Client:
 					rtpPacket.decode(data)
 					
 					currFrameNbr = rtpPacket.seqNum()
+
+					self.cachedFrame = max(self.cachedFrame, currFrameNbr)
+
 					marker = rtpPacket.marker()
 
 					if currFrameNbr < self.lastFragNbr:
@@ -127,9 +203,11 @@ class Client:
 					self.lastFragNbr = currFrameNbr
 					self.fraggedPayload += rtpPacket.getPayload()
 
-					print("Current Seq Num: " + str(currFrameNbr))
+					# print("Current Seq Num: " + str(currFrameNbr))
 
 					if marker == 1:
+						time.sleep(0.02)
+
 						currTimestamp = rtpPacket.timestamp()
 						if self.prevTimestamp == 0:
 							timeDiff = currTimestamp - self.prevTimestamp
@@ -141,6 +219,9 @@ class Client:
 						self.updateMovie(self.writeFrame(self.fraggedPayload))
 
 						self.frameNbr = currFrameNbr
+
+						self.updateProgressBar()
+
 						self.fraggedPayload = b''
 
 			except:
@@ -160,6 +241,7 @@ class Client:
 						# Xóa frame đang dang dở
 						self.fragmentedPayload = b''
 						break
+	'''
 
 	def writeFrame(self, data):
 		"""Write the received frame to a temp image file. Return the image file."""
@@ -173,8 +255,8 @@ class Client:
 	def updateMovie(self, imageFile):
 		"""Update the image file as video frame in the GUI."""
 		photo = ImageTk.PhotoImage(Image.open(imageFile))
-		self.label.configure(image = photo) 
-		self.label.image = photo
+		self.videoLabel.configure(image = photo) 
+		self.videoLabel.image = photo
 		
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
@@ -267,10 +349,15 @@ class Client:
 			# New RTSP session ID
 			if self.sessionId == 0:
 				self.sessionId = session
+
+			for line in lines:
+				if "Total-frames" in line:
+					self.totalFrames = int(line.split(' ')[1])
+					print("TOTAL FRAME RECEIVED =", self.totalFrames)
 			
 			# Process only if the session ID is the same
 			if self.sessionId == session:
-				if int(lines[0].split(' ')[1]) == 200: 
+				if int(lines[0].split(' ')[1]) == 200:
 					if self.requestSent == self.SETUP:
 						#-------------
 						# TO COMPLETE
@@ -318,3 +405,53 @@ class Client:
 			self.exitClient()
 		else: # When the user presses cancel, resume playing.
 			self.playMovie()
+	
+	def updateProgressBar(self):
+		if self.totalFrames == 0:
+			return
+		
+		print(">>> UPDATE BAR:", 
+          "play=", self.frameNbr, 
+          "cache=", self.cachedFrame, 
+          "total=", self.totalFrames)
+
+		barWidth = self.totalFrames  # width of canvas
+		cachedWidth = self.cachedFrame
+		playWidth = self.frameNbr
+
+		canvasWidth = self.progressBar.winfo_width()
+
+		# ---- cache (buffer) bar ----
+		cachePixel = int((cachedWidth / barWidth) * canvasWidth)
+		self.progressBar.coords(self.cacheRect, 0, 0, cachePixel, 10)
+
+		# ---- play bar ----
+		playPixel = int((playWidth / barWidth) * canvasWidth)
+		self.progressBar.coords(self.playRect, 0, 0, playPixel, 10)
+
+	def playerLoop(self):
+		while self.playing and not self.playEvent.isSet():
+			with self.bufferLock:
+				if len(self.buffer) > 0:
+					frameData = self.buffer.pop(0)
+					# cachedFrame recalculated
+					self.cachedFrame = self.frameNbr + len(self.buffer)
+				else:
+					# buffer empty → wait briefly
+					time.sleep(0.01)
+					continue
+
+			# Write & play frame
+			imgFile = self.writeFrame(frameData)
+			self.updateMovie(imgFile)
+
+			# Increase frame count
+			self.frameNbr += 1
+
+			# Update progress bar
+			self.updateProgressBar()
+
+			# Playback speed (30–40 fps)
+			time.sleep(0.03)
+
+		

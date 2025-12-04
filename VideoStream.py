@@ -6,6 +6,7 @@ class VideoStream:
 		except:
 			raise IOError
 		self.frameNum = 0
+		self.totalFrames = self.countTotalFrames()
 		
 	def nextFrame(self):
 		"""Get next frame by searching for JPEG markers"""
@@ -44,7 +45,28 @@ class VideoStream:
 				return frame_data
 			
 			last_byte = current_byte
-		
+	
+	def countTotalFrames(self):
+		SOI = b'\xff\xd8'
+		EOI = b'\xff\xd9'
+
+		count = 0
+		last_byte = b''
+
+		pos = self.file.tell()
+		self.file.seek(0)
+
+		while True:
+			byte = self.file.read(1)
+			if not byte:
+				break
+			if last_byte == b'\xff' and byte == b'\xd9':
+				count += 1
+			last_byte = byte
+
+		self.file.seek(pos)
+		return count
+
 	def frameNbr(self):
 		"""Get frame number."""
 		return self.frameNum
