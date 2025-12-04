@@ -3,6 +3,8 @@ import tkinter.messagebox
 from PIL import Image, ImageTk
 import socket, threading, sys, traceback, os, time
 
+from io import BytesIO
+
 from RtpPacket import RtpPacket
 
 CACHE_FILE_NAME = "cache-"
@@ -40,6 +42,8 @@ class Client:
 
 		self.prevTimestamp = 0
 		self.targetDelay = 0.02
+
+		self.frameCache = {}
 	
 	def createWidgets(self):
 		"""Build GUI."""
@@ -88,10 +92,13 @@ class Client:
 		"""Teardown button handler."""
 		self.sendRtspRequest(self.TEARDOWN)		
 		self.master.destroy() # Close the gui window
+
+		'''
 		filename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
 		if os.path.exists(filename):
-			os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
-
+			os.remove(filename) # Delete the cache image from video
+		'''
+			
 	def pauseMovie(self):
 		"""Pause button handler."""
 		if self.state == self.PLAYING:
@@ -127,18 +134,36 @@ class Client:
 					self.lastFragNbr = currFrameNbr
 					self.fraggedPayload += rtpPacket.getPayload()
 
-					print("Current Seq Num: " + str(currFrameNbr))
+					# print("Current Seq Num: " + str(currFrameNbr))
 
 					if marker == 1:
 						currTimestamp = rtpPacket.timestamp()
-						if self.prevTimestamp == 0:
-							timeDiff = currTimestamp - self.prevTimestamp
-							if timeDiff < self.targetDelay:
-								time.sleep(self.targetDelay - timeDiff)
-						
-						self.prevTimestamp = currTimestamp
 
-						self.updateMovie(self.writeFrame(self.fraggedPayload))
+						# caching logic
+						if currFrameNbr not in self.frameCache:
+							self.frameCache[currFrameNbr] = self.fraggedPayload
+
+							if self.prevTimestamp != 0:
+								timeDiff = currTimestamp - self.prevTimestamp
+								if timeDiff < self.targetDelay:
+									time.sleep(self.targetDelay - timeDiff)
+						
+							self.prevTimestamp = currTimestamp
+
+							photo = self.getPhoto(self.fraggedPayload)
+							if photo:
+								self.label.configure(image = photo) 
+								self.label.image = photo
+						
+						# else:
+						# 	if self.prevTimestamp != 0:
+						# 		timeDiff = currTimestamp - self.prevTimestamp
+						# 		if timeDiff < self.targetDelay:
+						# 			time.sleep(self.targetDelay - timeDiff)
+								
+						# 	self.prevTimestamp = currTimestamp
+
+						# self.updateMovie(self.writeFrame(self.fraggedPayload))
 
 						self.frameNbr = currFrameNbr
 						self.fraggedPayload = b''
@@ -161,6 +186,15 @@ class Client:
 						self.fragmentedPayload = b''
 						break
 
+	def getPhoto(self, data):
+		try:
+			image = BytesIO(data)
+			photo = ImageTk.PhotoImage(Image.open(image))
+			return photo
+		except:
+			return None
+	
+	'''
 	def writeFrame(self, data):
 		"""Write the received frame to a temp image file. Return the image file."""
 		cachename = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
@@ -175,6 +209,7 @@ class Client:
 		photo = ImageTk.PhotoImage(Image.open(imageFile))
 		self.label.configure(image = photo) 
 		self.label.image = photo
+	'''
 		
 	def connectToServer(self):
 		"""Connect to the Server. Start a new RTSP/TCP session."""
