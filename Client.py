@@ -50,7 +50,7 @@ class Client:
 		self.bufferLock = threading.Lock()
 		self.playing = False
 		self.playerThread = None
-	
+
 	def createWidgets(self):
 		"""Build GUI."""
 		self.videoFrame = Frame(self.master, width=1280, height=720, bg="black")
@@ -177,71 +177,6 @@ class Client:
 				if self.playEvent.isSet():
 						break
 				continue
-	
-	'''
-	def listenRtp(self):		
-		"""Listen for RTP packets."""
-		while True:
-			try:
-				data = self.rtpSocket.recv(65536)
-				if data:
-					rtpPacket = RtpPacket()
-					rtpPacket.decode(data)
-					
-					currFrameNbr = rtpPacket.seqNum()
-
-					self.cachedFrame = max(self.cachedFrame, currFrameNbr)
-
-					marker = rtpPacket.marker()
-
-					if currFrameNbr < self.lastFragNbr:
-						continue
-
-					if currFrameNbr > self.lastFragNbr:
-						self.fraggedPayload = b''
-					
-					self.lastFragNbr = currFrameNbr
-					self.fraggedPayload += rtpPacket.getPayload()
-
-					# print("Current Seq Num: " + str(currFrameNbr))
-
-					if marker == 1:
-						time.sleep(0.02)
-
-						currTimestamp = rtpPacket.timestamp()
-						if self.prevTimestamp == 0:
-							timeDiff = currTimestamp - self.prevTimestamp
-							if timeDiff < self.targetDelay:
-								time.sleep(self.targetDelay - timeDiff)
-						
-						self.prevTimestamp = currTimestamp
-
-						self.updateMovie(self.writeFrame(self.fraggedPayload))
-
-						self.frameNbr = currFrameNbr
-
-						self.updateProgressBar()
-
-						self.fraggedPayload = b''
-
-			except:
-				# Stop listening upon requesting PAUSE or TEARDOWN
-					if self.playEvent.isSet(): 
-						break
-			
-					# Upon receiving ACK for TEARDOWN request,
-					# close the RTP socket
-					if self.teardownAcked == 1:
-						try:
-							self.rtpSocket.shutdown(socket.SHUT_RDWR)
-							self.rtpSocket.close()
-						except:
-							pass # Bỏ qua nếu socket đã đóng
-
-						# Xóa frame đang dang dở
-						self.fragmentedPayload = b''
-						break
-	'''
 
 	def writeFrame(self, data):
 		"""Write the received frame to a temp image file. Return the image file."""
@@ -452,6 +387,6 @@ class Client:
 			self.updateProgressBar()
 
 			# Playback speed (30–40 fps)
-			time.sleep(0.03)
+			time.sleep(0.05)
 
 		
